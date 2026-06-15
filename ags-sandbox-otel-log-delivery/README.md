@@ -2,6 +2,8 @@
 
 This directory contains customer-deliverable best-practice cookbooks for sending AGS sandbox logs to a customer-owned OpenTelemetry-compatible logging system over VPC networking.
 
+Chinese README: [README.zh-CN.md](README.zh-CN.md)
+
 Language-specific cookbook documents:
 
 - Chinese: [cookbook.zh-CN.md](cookbook.zh-CN.md)

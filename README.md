@@ -4,6 +4,8 @@ This repository contains extension cookbooks and reference implementations for T
 
 本仓库用于存放腾讯云 AGS 客户场景的扩展 cookbook 和参考实现。
 
+Chinese version: [README.zh-CN.md](README.zh-CN.md)
+
 ## Cookbooks
 
 - [kafka-prometheus-exporter](kafka-prometheus-exporter/README.md): consume AGS monitoring data from CKafka and expose it to self-managed Prometheus.
