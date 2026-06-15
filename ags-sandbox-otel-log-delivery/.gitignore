@@ -1,0 +1,8 @@
+.env.local
+*.local.env
+ags-tool.generated.json
+*.tfstate
+*.tfstate.*
+.terraform/
+__pycache__/
+*.py[cod]

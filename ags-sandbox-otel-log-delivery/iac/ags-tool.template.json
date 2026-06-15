@@ -1,0 +1,134 @@
+{
+  "ToolName": "${AGS_TOOL_NAME}",
+  "ToolType": "custom",
+  "Description": "AGS sandbox service that delivers application logs to a customer-owned OTLP/gRPC collector",
+  "DefaultTimeout": "1h",
+  "RoleArn": "${AGS_ROLE_ARN}",
+  "NetworkConfiguration": {
+    "NetworkMode": "VPC",
+    "VpcConfig": {
+      "SubnetIds": [
+        "${AGS_SUBNET_ID}"
+      ],
+      "SecurityGroupIds": [
+        "${AGS_SECURITY_GROUP_ID}"
+      ]
+    }
+  },
+  "CustomConfiguration": {
+    "Image": "${AGS_IMAGE}",
+    "ImageRegistryType": "${AGS_IMAGE_REGISTRY_TYPE}",
+    "Command": [
+      "/opt/ags/entrypoint.sh"
+    ],
+    "Args": [
+      "bash",
+      "-lc",
+      "${BUSINESS_COMMAND}"
+    ],
+    "Env": [
+      {
+        "Name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "Value": "${OTLP_ENDPOINT}"
+      },
+      {
+        "Name": "OTEL_EXPORTER_OTLP_INSECURE",
+        "Value": "${OTEL_EXPORTER_OTLP_INSECURE}"
+      },
+      {
+        "Name": "APP_PORT",
+        "Value": "${APP_PORT}"
+      },
+      {
+        "Name": "LOG_FILE_PATTERNS",
+        "Value": "${LOG_FILE_PATTERNS}"
+      },
+      {
+        "Name": "LOG_EXCLUDE_FILE_PATTERNS",
+        "Value": "${LOG_EXCLUDE_FILE_PATTERNS}"
+      },
+      {
+        "Name": "LOG_RESOURCE_ENV_KEYS",
+        "Value": "${LOG_RESOURCE_ENV_KEYS}"
+      },
+      {
+        "Name": "LOG_START_AT",
+        "Value": "${LOG_START_AT}"
+      },
+      {
+        "Name": "SANDBOX_ID_PIPE",
+        "Value": "${SANDBOX_ID_PIPE}"
+      },
+      {
+        "Name": "SANDBOX_ID_WAIT_TIMEOUT",
+        "Value": "${SANDBOX_ID_WAIT_TIMEOUT}"
+      },
+      {
+        "Name": "ENVD_COMMAND",
+        "Value": "${ENVD_COMMAND}"
+      },
+      {
+        "Name": "ENVD_ARGS",
+        "Value": "${ENVD_ARGS}"
+      },
+      {
+        "Name": "SERVICE_NAME",
+        "Value": "${SERVICE_NAME}"
+      },
+      {
+        "Name": "APP_ENV",
+        "Value": "${APP_ENV}"
+      },
+      {
+        "Name": "CUSTOMER_ID",
+        "Value": "${CUSTOMER_ID}"
+      },
+      {
+        "Name": "BUILD_ID",
+        "Value": "${BUILD_ID}"
+      },
+      {
+        "Name": "REGION",
+        "Value": "${REGION}"
+      }
+    ],
+    "Ports": [
+      {
+        "Name": "envd",
+        "Port": 49983,
+        "Protocol": "TCP"
+      },
+      {
+        "Name": "http",
+        "Port": 8080,
+        "Protocol": "TCP"
+      }
+    ],
+    "Probe": {
+      "HttpGet": {
+        "Path": "/health",
+        "Port": 49983,
+        "Scheme": "HTTP"
+      },
+      "ReadyTimeoutMs": 30000,
+      "ProbePeriodMs": 3000,
+      "ProbeTimeoutMs": 1000,
+      "SuccessThreshold": 1,
+      "FailureThreshold": 10
+    },
+    "Resources": {
+      "CPU": "${AGS_RESOURCE_CPU}",
+      "Memory": "${AGS_RESOURCE_MEMORY}"
+    }
+  },
+  "Tags": [
+    {
+      "Key": "purpose",
+      "Value": "${PURPOSE_TAG}"
+    },
+    {
+      "Key": "billing",
+      "Value": "${BILLING_TAG_VALUE}"
+    }
+  ]
+}
