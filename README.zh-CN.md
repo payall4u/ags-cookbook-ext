@@ -8,7 +8,7 @@ English version: [README.md](README.md)
 
 - [kafka-prometheus-exporter](kafka-prometheus-exporter/README.md)：将 AGS 沙箱监控数据从 CKafka 接入自建 Prometheus。
 - [ags-sandbox-otel-log-delivery](ags-sandbox-otel-log-delivery/README.zh-CN.md)：将 AGS custom image 沙箱内的文件日志通过 VPC 投递到客户自建 OTLP/gRPC 日志系统。
-- [ags-volume-api-design](ags-volume-api-design/README.zh-CN.md)：面向客户的 AGS Volume API 变更说明，覆盖新增 API、现有 API 字段变化和首期能力边界。
+- [ags-volume-api-design](ags-volume-api-design/README.zh-CN.md)：面向客户的 AGS Volume API 变更说明，覆盖新增 API、现有 API 字段变化和首期范围。
 
 ## 使用方式
 

@@ -55,7 +55,7 @@
     <rect class="field" x="72" y="344" width="214" height="112" rx="14"/>
     <text class="box-title" x="94" y="376">共享介质</text>
     <text class="box-line" x="94" y="408">客户已有资源</text>
-    <text class="box-line" x="94" y="434">通过 SubPath 切分边界</text>
+    <text class="box-line" x="94" y="434">通过 SubPath 切分范围</text>
   </g>
 
   <g filter="url(#shadow)">
