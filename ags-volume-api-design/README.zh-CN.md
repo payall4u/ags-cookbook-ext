@@ -8,6 +8,6 @@
 
 - API 变更总览：新增 API 和已有 API 调整。
 - 新增 API：`CreateVolumeTemplate`、`DescribeVolumeTemplates`、`DeleteVolumeTemplate`、`DescribeAgentCBS`、`DeleteAgentCBS`。
-- 现有 API 调整：`CreateSandboxTool`、`StartSandboxInstance`、`DescribeSandboxInstance`、`DescribeSandboxTool`。
+- 现有 API 调整：`CreateSandboxTool`、`StartSandboxInstance`、`DescribeSandboxTool` / `DescribeSandboxToolList`、`DescribeSandboxInstance` / `DescribeSandboxInstanceList`。
 - 关键字段：`VolumeTemplate`、`VolumeMounts[]`、`MountOptions[]`、`Metadata[]`、实例最终 `VolumeMounts[]`。
 - 首期约束：AgentCBS 生命周期、`${sessionId}` 模板变量、tag 鉴权、兼容和边界。

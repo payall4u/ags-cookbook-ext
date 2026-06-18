@@ -78,9 +78,9 @@
     <rect class="req" x="686" y="158" width="234" height="164" rx="16"/>
     <text class="box-title" x="710" y="190">StartSandboxInstance</text>
     <text class="box-line" x="710" y="222">Metadata[]</text>
-    <text class="box-line" x="710" y="248">实例级 VolumeMounts[]</text>
+    <text class="box-line" x="710" y="248">MountOptions[]</text>
     <text class="box-line" x="710" y="274">按 Name 覆盖或启用</text>
-    <text class="box-line" x="710" y="300">不允许追加全新存储</text>
+    <text class="box-line" x="710" y="300">不接收 VolumeTemplateId</text>
   </g>
 
   <g filter="url(#shadow)">
@@ -135,6 +135,6 @@
   <text class="label" x="194" y="330">共享介质不派生新资源</text>
 
   <rect x="48" y="610" width="1184" height="58" rx="14" fill="#ffffff" stroke="#cbd5e1"/>
-  <text class="small" x="72" y="637">关键规则：实例级 VolumeMounts 只能覆盖或启用 Tool 已声明的同名挂载；不能在启动实例时引用新的 VolumeTemplate。</text>
+  <text class="small" x="72" y="637">关键规则：实例级 MountOptions 只能按 Name 覆盖或启用 Tool 已声明的同名挂载；不能在启动实例时引用新的 VolumeTemplate。</text>
   <text class="small" x="72" y="660">AgentCBS 不接管客户已有 CBS，只由 AgentCBS 类型 VolumeTemplate 在创建实例时自动创建或复用。</text>
 </svg>

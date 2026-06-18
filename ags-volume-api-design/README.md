@@ -8,6 +8,6 @@ Chinese document: [cookbook.zh-CN.md](cookbook.zh-CN.md)
 
 - API change overview: new APIs and existing API changes.
 - New APIs: `CreateVolumeTemplate`, `DescribeVolumeTemplates`, `DeleteVolumeTemplate`, `DescribeAgentCBS`, and `DeleteAgentCBS`.
-- Existing API changes: `CreateSandboxTool`, `StartSandboxInstance`, `DescribeSandboxInstance`, and `DescribeSandboxTool`.
+- Existing API changes: `CreateSandboxTool`, `StartSandboxInstance`, `DescribeSandboxTool` / `DescribeSandboxToolList`, and `DescribeSandboxInstance` / `DescribeSandboxInstanceList`.
 - Key fields: `VolumeTemplate`, `VolumeMounts[]`, `MountOptions[]`, `Metadata[]`, and final instance `VolumeMounts[]`.
 - First-phase constraints: AgentCBS lifecycle, `${sessionId}` template variables, tag-based authorization, compatibility, and boundaries.
