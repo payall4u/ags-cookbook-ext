@@ -1,13 +1,11 @@
-# AGS Volume API Change Notes
+# AGS Volume Cloud API Guide
 
-This directory contains customer-facing AGS Volume API change notes, covering new APIs, existing API field changes, request/response semantics, and first-phase scope.
+This directory contains the customer-facing AGS Volume Cloud API guide, including basic concepts, Cloud APIs, and usage examples.
 
 Chinese document: [cookbook.zh-CN.md](cookbook.zh-CN.md)
 
 ## Contents
 
-- API change overview: new APIs and existing API changes.
-- New APIs: `CreateVolumeTemplate`, `DescribeVolumeTemplates`, `DeleteVolumeTemplate`, `DescribeAgentCBS`, and `DeleteAgentCBS`.
-- Existing API changes: `CreateSandboxTool`, `StartSandboxInstance`, `DescribeSandboxTool` / `DescribeSandboxToolList`, and `DescribeSandboxInstance` / `DescribeSandboxInstanceList`.
-- Key fields: `VolumeTemplate`, `VolumeMounts[]`, `MountOptions[]`, `Metadata[]`, and final instance `VolumeMounts[]`.
-- First-phase scope: AgentCBS, `${sessionId}` template variables, tag ownership, and compatibility.
+- Basic concepts: `VolumeTemplate`, `VolumeMount`, `MountOptions`, `Metadata`, and `AgentCBS`.
+- Cloud APIs: request and response parameters for related Actions.
+- Usage examples: AgentCBS session reuse, shared-storage session workspace, and on-demand mount enablement.

@@ -10,10 +10,10 @@ Chinese version: [README.zh-CN.md](README.zh-CN.md)
 
 - [kafka-prometheus-exporter](kafka-prometheus-exporter/README.md): consume AGS monitoring data from CKafka and expose it to self-managed Prometheus.
 - [ags-sandbox-otel-log-delivery](ags-sandbox-otel-log-delivery/README.md): deliver file-based logs from AGS custom-image sandboxes to a customer-owned OTLP/gRPC logging system over VPC networking.
-- [ags-volume-api-design](ags-volume-api-design/README.md): customer-facing AGS Volume API change notes covering new APIs, existing API field changes, and first-phase scope.
+- [ags-volume-api-design](ags-volume-api-design/README.md): customer-facing AGS Volume Cloud API guide covering basic concepts, Cloud APIs, and usage examples.
 
 ## 目录
 
 - [kafka-prometheus-exporter](kafka-prometheus-exporter/README.md)：将 AGS 沙箱监控数据从 CKafka 接入自建 Prometheus。
 - [ags-sandbox-otel-log-delivery](ags-sandbox-otel-log-delivery/README.md)：将 AGS custom image 沙箱内的文件日志通过 VPC 投递到客户自建 OTLP/gRPC 日志系统。
-- [ags-volume-api-design](ags-volume-api-design/README.zh-CN.md)：面向客户的 AGS Volume API 变更说明，覆盖新增 API、现有 API 字段变化和首期范围。
+- [ags-volume-api-design](ags-volume-api-design/README.zh-CN.md)：面向客户的 AGS Volume 云 API 说明，覆盖基础概念、云 API 和使用场景案例。
