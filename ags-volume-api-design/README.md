@@ -1,12 +1,13 @@
-# AGS Volume API Design Cookbook
+# AGS Volume API Change Notes
 
-This directory contains a customer-facing, documentation-only cookbook for the AGS Volume API design.
+This directory contains customer-facing AGS Volume API change notes, covering new APIs, existing API field changes, request/response semantics, and first-phase boundaries.
 
-Chinese cookbook: [cookbook.zh-CN.md](cookbook.zh-CN.md)
+Chinese document: [cookbook.zh-CN.md](cookbook.zh-CN.md)
 
 ## Contents
 
-- Core entities: `VolumeTemplate`, `VolumeMount`, `AgentCBS`, `Metadata`, and `SandboxInstance.VolumeMounts`.
-- Usage scenarios for COS, CFS, Agent Bucket, and AGS-managed AgentCBS.
-- API shape, request fields, response fields, constraints, and first-phase boundaries.
-
+- API change overview: new APIs and existing API changes.
+- New APIs: `CreateVolumeTemplate`, `DescribeVolumeTemplates`, `DeleteVolumeTemplate`, `DescribeAgentCBS`, and `DeleteAgentCBS`.
+- Existing API changes: `CreateSandboxTool`, `StartSandboxInstance`, `DescribeSandboxInstance`, and `DescribeSandboxTool`.
+- Key fields: `VolumeTemplate`, `VolumeMounts[]`, `MountOptions[]`, `Metadata[]`, and final instance `VolumeMounts[]`.
+- First-phase constraints: AgentCBS lifecycle, `${sessionId}` template variables, tag-based authorization, compatibility, and boundaries.

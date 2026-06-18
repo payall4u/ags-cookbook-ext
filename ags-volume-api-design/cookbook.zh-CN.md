@@ -1,922 +1,539 @@
-# 新版 Volume 使用方式和 API 设计
+# AGS Volume API 变更说明
 
-## 1. 概念
+本文面向需要评估 AGS Volume 首期能力的客户，重点说明新增 API、现有 API 的字段变化、请求/响应语义和首期边界。示例使用 OpenAPI/JSON 风格表达字段，不绑定某个语言实现。
 
-本节只说明新增实体及其实际意义。
+## 1. 设计结论
 
-### 1.1 VolumeTemplate
+AGS Volume 首期不是简单新增一个挂载参数，而是把 AGS 使用存储的声明、授权、审计、计费归属和实例最终挂载结果显式化。
 
-`VolumeTemplate` 是存储声明资源，用来描述 AGS 可使用的一份存储能力。
+核心变化：
 
-在不同存储类型下，`VolumeTemplate` 有一些区别：
+- 新增 `VolumeTemplate` 资源，用来声明 AGS 可使用的一份存储能力。
+- 新增 AGS 托管的 `AgentCBS` 数据盘实例，由 AgentCBS 类型 `VolumeTemplate` 自动派生。
+- `CreateSandboxTool` 是已有 API，本次新增 `VolumeMounts[]` 字段，用于让 Tool 绑定可使用的 `VolumeTemplate`。
+- `StartSandboxInstance` 是已有 API，不新增 `CreateSandboxInstance`；实例启动时继续使用已有 `Metadata[]` 和 `MountOptions[]`。
+- 实例启动时不能直接引用新的 `VolumeTemplate`，只能覆盖或启用 Tool 已声明的同名挂载。
+- `DescribeSandboxInstance` / `DescribeSandboxInstanceList` 返回实例最终挂载结果，客户可以看到最终 `ResolvedSubPath` 或 `ResolvedAgentCBSId`。
 
-| 类型 | VolumeTemplate 表达什么 |
-|------|-------------------------|
-| COS / CFS / Agent Bucket （共享存储） | 客户已有共享介质中允许 AGS 使用的路径、前缀或空间，以及可选的子目录模板 |
-| AgentCBS （沙箱独占块设备） | AGS 如何派生数据盘，包括默认容量、盘类型、名称模板和回收策略 |
+首期不支持：
 
-`VolumeTemplate` 也是鉴权、审计的入口，同时也是 AgentCBS 的计费单位。通过 `VolumeTemplate` 客户不仅可以更好的管理权限、也能清楚观测到哪些存储正在使用中。
+- 不接管客户已有 CBS 数据盘。
+- 不开放通用 CBS 接入，只支持 AGS AgentCBS。
+- 不支持启动实例时追加 Tool 未声明的新存储。
+- 不支持实例启动后动态追加或卸载存储。
+- 不支持除 `${sessionId}` 之外的模板变量。
+- 实例最终挂载结果只作为实例视图返回，不作为独立云资源。
 
-### 1.2 VolumeMount
+## 2. 实体关系
 
-`VolumeMount` 是 Tool 对 `VolumeTemplate` 的挂载声明，也是实例详情中最终挂载结果的表达。实例启动时不直接传 `VolumeMounts[]`，仍然通过已有 `StartSandboxInstance.MountOptions[]` 按名称覆盖或启用 Tool 已声明的挂载。
+![AGS Volume entity relationship](assets/volume-usage-entity-relationship.svg)
 
-Tool 侧 `VolumeMounts[]` 表示这个 Tool 可以使用哪些存储，以及默认挂载到沙箱内哪个路径。实例启动时的挂载覆盖字段只能按 `Name` 引用 Tool 中已经声明的挂载，用于：
+| 实体 | 是否云资源 | 作用 |
+|------|------------|------|
+| `VolumeTemplate` | 是 | 存储声明资源；也是 tag 鉴权、审计和 AgentCBS 计费归属单位 |
+| `VolumeMount` | 否 | Tool 对 `VolumeTemplate` 的使用声明，保存在 Tool 配置中 |
+| `MountOption` | 否 | `StartSandboxInstance` 已有实例级覆盖字段，按 `Name` 覆盖或启用 Tool 声明的挂载 |
+| `SandboxInstance.VolumeMounts[]` | 否 | 实例最终挂载结果视图，依附于实例，不是独立资源 |
+| `AgentCBS` | 否 | AGS 内部托管数据盘实例，有状态和绑定关系，但通过所属 `VolumeTemplate` 鉴权 |
 
-- 启用 Tool 中默认不挂载的同名存储。
-- 覆盖本次实例的 `MountPath`。
-- 将权限从可写收紧为只读。
-- 在允许范围内指定本次实例的 `SubPath`。
+## 3. API 变更总览
 
-`VolumeMount.Inherit` 用来控制该挂载是否随 Tool 默认挂载：
+### 3.1 新增 API
 
-| Inherit | 语义 |
-|---------|------|
-| `true` 或不传 | 默认挂载；从该 Tool 启动的实例会自动继承该挂载 |
-| `false` | Tool 只声明这份存储可用；实例默认不挂载，只有启动实例时显式传同名 `MountOption` 才启用 |
+| API | 说明 |
+|-----|------|
+| `CreateVolumeTemplate` | 创建存储声明资源 |
+| `DescribeVolumeTemplates` | 查询存储声明资源 |
+| `DeleteVolumeTemplate` | 删除未被 Tool 引用且无存活 AgentCBS 的存储声明 |
+| `DescribeAgentCBS` | 查询 AGS 派生的数据盘 |
+| `DeleteAgentCBS` | 删除空闲 AgentCBS |
 
-### 1.3 AgentCBS
+### 3.2 调整现有 API
 
-`AgentCBS` 是 AGS 提供的新的存储方案，由 AgentCBS 类型 `VolumeTemplate` 派生。客户不需要传入 CBS ID；AGS 会在启动沙箱实例时根据 `VolumeTemplate` 自动创建或复用 AgentCBS（详见下文中的使用方式）。
+| API | 变化 |
+|-----|------|
+| `CreateSandboxTool` | 新增 `VolumeMounts[]`，声明 Tool 可使用哪些 `VolumeTemplate` |
+| `DescribeSandboxTool` / `DescribeSandboxToolList` | 对新 Tool 返回 `VolumeMounts[]` |
+| `StartSandboxInstance` | 复用已有 `Metadata[]` 做模板渲染；复用已有 `MountOptions[]` 覆盖或启用 Tool 已声明挂载 |
+| `DescribeSandboxInstance` / `DescribeSandboxInstanceList` | 返回最终实际挂载结果 `VolumeMounts[]` |
 
-AgentCBS 有独立状态：
+### 3.3 与旧字段的关系
 
-| 状态 | 说明 |
+| 旧链路字段 | 新链路关系 |
+|------------|------------|
+| `StorageMounts[]` | 旧 Tool 继续使用；新 Tool 使用 `VolumeMounts[]` |
+| `MountOptions[]` | 继续作为实例级覆盖字段；旧 Tool 覆盖 `StorageMounts[]`，新 Tool 覆盖 `VolumeMounts[]` |
+| `ResolvedMounts` | 仍可作为运行时 provider 下发结果；客户查询需要看新的实例最终挂载视图 |
+
+首期建议同一个 Tool 不同时使用 `StorageMounts[]` 和 `VolumeMounts[]`，避免新旧语义混用。
+
+## 4. 新增 API
+
+### 4.1 CreateVolumeTemplate
+
+创建一份 AGS 可使用的存储声明资源。
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `VolumeTemplateName` | string | 是 | 客户自定义名称，同一租户内唯一 |
+| `Description` | string | 否 | 描述 |
+| `Tags` | `Tag[]` | 否 | 云资源 tag，用于团队、项目、环境、成本归属 |
+| `SourceType` | string | 是 | `Cos` / `Cfs` / `AgentBucket` / `AgentCBS` |
+| `Source` | object | 是 | 存储源配置；不同 `SourceType` 结构不同 |
+| `SubPathTemplate` | string | 否 | 共享介质子路径模板，首期只支持 `${sessionId}` |
+| `NameTemplate` | string | AgentCBS 可选 | AgentCBS 名称模板，例如 `agent-${sessionId}`；不传表示每次启动生成唯一盘名 |
+| `DefaultCapacity` | string | AgentCBS 必填 | AgentCBS 默认容量，例如 `20Gi` |
+| `DiskType` | string | AgentCBS 必填 | AgentCBS 盘型，例如 `CLOUD_SSD` |
+| `ReclaimPolicy` | string | 是 | `Retain` / `Delete`；共享介质首期只允许 `Retain` |
+
+请求示例：共享 COS 会话目录
+
+```json
+{
+  "VolumeTemplateName": "session-workspace",
+  "Description": "workspace split by sessionId",
+  "Tags": [
+    {"Key": "team", "Value": "team-a"},
+    {"Key": "env", "Value": "prod"}
+  ],
+  "SourceType": "Cos",
+  "Source": {
+    "Cos": {
+      "BucketName": "agent-workspaces",
+      "BucketPath": "/sessions"
+    }
+  },
+  "SubPathTemplate": "${sessionId}",
+  "ReclaimPolicy": "Retain"
+}
+```
+
+请求示例：AgentCBS 会话复用盘
+
+```json
+{
+  "VolumeTemplateName": "session-agent-cbs",
+  "SourceType": "AgentCBS",
+  "Source": {
+    "AgentCBS": {}
+  },
+  "DefaultCapacity": "20Gi",
+  "DiskType": "CLOUD_SSD",
+  "NameTemplate": "agent-${sessionId}",
+  "ReclaimPolicy": "Retain"
+}
+```
+
+响应字段：
+
+| 字段 | 说明 |
 |------|------|
-| `Bound` | 已绑定到某个沙箱实例 |
-| `Available` | 当前空闲，后续可复用 |
+| `VolumeTemplateId` | 系统生成的资源 ID |
+| `Status` | 初始为 `Active` |
+| `CreateTime` | 创建时间 |
+| `VolumeTemplate` | 创建后的完整资源视图 |
 
-删除实例时，AgentCBS 根据 `ReclaimPolicy` 决定保留或删除。
+关键校验：
 
-### 1.4 Metadata
+- `VolumeTemplateName` 同一租户内唯一。
+- `SourceType=AgentCBS` 时，必须填写 `DefaultCapacity` 和 `DiskType`。
+- AgentCBS 不允许传入客户已有 CBS `DiskId`。
+- 共享介质必须填写客户已有介质边界，例如 COS bucket/path、CFS filesystem/path、Agent Bucket domain/space。
+- 共享介质不允许 `ReclaimPolicy=Delete`。
+- `SubPathTemplate` 和 `NameTemplate` 首期只允许使用字面量 `${sessionId}`。
 
-`Metadata` 是启动实例时传入的变量集合，用于渲染 `VolumeTemplate` 中声明的模板。例如在 `Metadata` 中声明 `sessionId` 后，沙箱挂载时可以使用特定的 AgentCBS，或使用特定共享存储的子路径：
+### 4.2 DescribeVolumeTemplates
 
-| 模板位置 | 用途 | 示例 |
-|----------|------|------|
-| `VolumeTemplate.SubPathTemplate` | 生成共享介质子目录 | `${sessionId}` -> `sess-001` |
-| `AgentCBS.NameTemplate` | 生成 AgentCBS 名称 | `agent-${sessionId}` -> `agent-sess-001` |
+查询 `VolumeTemplate` 资源。
 
-如果模板引用的变量没有在 `StartSandboxInstance.Metadata` 中提供，系统应拒绝启动实例（详见下文中的使用方式）。
+请求字段：
 
-### 1.5 SandboxInstance.VolumeMounts
+| 字段 | 说明 |
+|------|------|
+| `VolumeTemplateIds` | 按 ID 批量查询 |
+| `VolumeTemplateName` | 按名称查询 |
+| `SourceType` | 按 `Cos` / `Cfs` / `AgentBucket` / `AgentCBS` 过滤 |
+| `Status` | 按状态过滤 |
+| `Tags` | 按 tag 过滤 |
+| `Offset` / `Limit` | 分页 |
 
-`SandboxInstance.VolumeMounts[]` 是实例最终实际挂载结果，不是新的独立云资源。
+响应字段：
 
-它用于查询、审计和排查问题：
+| 字段 | 说明 |
+|------|------|
+| `TotalCount` | 总数 |
+| `VolumeTemplates[]` | 模板列表 |
 
-- 共享介质场景返回最终 `ResolvedSubPath`。
-- AgentCBS 场景返回最终绑定的 `ResolvedAgentCBSId`。
-- 实例级覆盖后的 `MountPath`、`ReadOnly` 等参数也会体现在这里。
+`DescribeVolumeTemplates` 返回的是安全视图。密钥、token、临时凭证等敏感字段不应原样返回；返回内容只需要让客户识别存储边界，例如 bucket/path、filesystem/path、Agent Bucket domain/space。
 
-系统拒绝以下实例级行为：
+### 4.3 DeleteVolumeTemplate
 
-- 启动实例时引用 Tool 未声明的存储。
-- 启动实例时引用新的 `VolumeTemplate`。
-- 修改 `VolumeTemplateId`。
-- 修改容量、盘类型、回收策略等资源定义字段。
-- 将只读挂载放宽为可写。
-- 将挂载范围扩大到 `VolumeTemplate` 允许边界之外。
+删除 `VolumeTemplate` 声明资源。
 
-## 2. 场景
+请求字段：
 
-### 2.1 AgentCBS 会话复用数据盘
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `VolumeTemplateId` | 是 | 要删除的模板 ID |
 
-客户希望同一个会话多次启动沙箱时复用同一块数据盘。典型场景是会话重连、长期工作区或需要保留工作现场的 Agent。
+删除约束：
 
-#### 2.1.1 创建 VolumeTemplate
+- 如果仍被 Tool 的 `VolumeMounts[]` 引用，拒绝删除。
+- 如果仍存在未删除的 AgentCBS，拒绝删除。
+- 如果存在 `Deleting` / `Error` 状态 AgentCBS，拒绝删除，等待后台或人工收口。
+- 删除共享介质类型模板时，只删除 AGS 内部声明，不删除客户底层 COS / CFS / Agent Bucket 资源，也不删除其中的数据。
 
-```go
-vt, err := client.CreateVolumeTemplate(ctx, &ags.CreateVolumeTemplateRequest{
-    VolumeTemplateName: "session-agent-cbs",
-    Description:        "AgentCBS data disk reused by sessionId",
-    ProvisionMode:      "Dedicated",
-    ReclaimPolicy:      "Retain",
-    DefaultCapacity:    "20Gi",
-    Source: ags.VolumeSource{
-        Type: "AgentCBS",
-        AgentCBS: &ags.AgentCBSVolumeSource{
-            NameTemplate: "agent-${sessionId}",
-            DiskType:     "CLOUD_SSD",
-        },
-    },
-})
+### 4.4 DescribeAgentCBS
+
+查询 AGS 派生的数据盘。
+
+请求字段：
+
+| 字段 | 说明 |
+|------|------|
+| `AgentCBSIds` | 按内部盘 ID 查询 |
+| `VolumeTemplateId` | 查询某个模板派生的 AgentCBS |
+| `Status` | `Creating` / `Available` / `Bound` / `Deleting` / `Deleted` / `Error` |
+| `BoundInstanceId` | 查询绑定到某个实例的数据盘 |
+| `Offset` / `Limit` | 分页 |
+
+响应字段：
+
+| 字段 | 说明 |
+|------|------|
+| `AgentCBSId` | AGS 内部数据盘 ID |
+| `VolumeTemplateId` | 所属模板 |
+| `Name` | 渲染后的名称或系统生成名 |
+| `Status` | 当前状态 |
+| `BoundInstanceId` | 当前绑定实例，空表示未绑定 |
+| `Capacity` | 容量 |
+| `DiskType` | 盘型 |
+| `Chargeable` | 是否仍占用计费/配额 |
+| `CreateTime` | 创建时间 |
+| `LastUnbindTime` | 最近解绑时间 |
+
+鉴权规则：
+
+- AgentCBS 不单独打 tag。
+- `DescribeAgentCBS` 通过所属 `VolumeTemplate` 做资源鉴权和 tag 条件判断。
+- AgentCBS 的审计和成本归属也回到所属 `VolumeTemplate`。
+
+### 4.5 DeleteAgentCBS
+
+删除空闲 AgentCBS。
+
+请求字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `AgentCBSId` | 是 | 要删除的 AgentCBS ID |
+
+删除规则：
+
+- 只允许删除 `Available` 状态的 AgentCBS。
+- `Bound` 状态必须拒绝，客户需要先停止绑定实例。
+- `Deleting` 状态表示正在删除，应返回当前状态或幂等成功。
+- 删除失败时不能提前停止计费或释放配额；查询仍应能看到该 AgentCBS 的非 `Deleted` 状态。
+
+## 5. 现有 API 调整
+
+### 5.1 CreateSandboxTool 新增 VolumeMounts
+
+`CreateSandboxTool` 是已有 API。本次新增 `VolumeMounts[]` 字段，让 Tool 明确声明自己可以使用哪些 `VolumeTemplate`。
+
+请求新增字段：
+
+```json
+{
+  "ToolName": "code-interpreter",
+  "ToolType": "custom",
+  "VolumeMounts": [
+    {
+      "Name": "workspace",
+      "VolumeTemplateId": "vt-xxxxxxxx",
+      "MountPath": "/workspace",
+      "ReadOnly": false,
+      "Inherit": true
+    }
+  ]
+}
 ```
 
-#### 2.1.2 创建 SandboxTool 并绑定挂载
+`VolumeMount` 字段：
 
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "code-interpreter",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "data",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/data",
-            Inherit:           ptr.Bool(true),
-        },
-    },
-})
-```
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `Name` | 是 | Tool 内唯一；实例级 `MountOptions[]` 按该字段匹配 |
+| `VolumeTemplateId` | 是 | 引用的模板 ID |
+| `MountPath` | 是 | 容器内默认挂载路径 |
+| `ReadOnly` | 否 | 默认是否只读 |
+| `SubPath` | 否 | 共享介质默认子路径；AgentCBS 禁止填写 |
+| `Inherit` | 否 | 是否默认挂载到实例，默认 `true` |
 
-#### 2.1.3 启动实例
+校验规则：
 
-```go
-inst, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-    Metadata: []ags.Metadata{
-        {Name: "sessionId", Value: "sess-001"},
-    },
-})
-```
+- `VolumeTemplateId` 必须存在。
+- 调用方必须有 `UseVolumeTemplate` 权限。
+- `Name` 在 Tool 内唯一。
+- `MountPath` 合法且不冲突。
+- AgentCBS 挂载不允许 `SubPath`。
+- `VolumeTemplate.SubPathTemplate` 非空时，Tool 侧不允许传 `SubPath`。
+- 新 Tool 首期不建议同时传 `StorageMounts[]` 和 `VolumeMounts[]`。
 
-预期结果：
+### 5.2 DescribeSandboxTool / DescribeSandboxToolList 返回 VolumeMounts
 
-- AGS 渲染 AgentCBS 名称：`agent-sess-001`。
-- 如果不存在同名 AgentCBS，则创建默认大小为 `20Gi` 的数据盘。
-- 沙箱内 `/data` 挂载到该 AgentCBS。
-- 实例详情中返回 `ResolvedAgentCBSId`。
-- AgentCBS 复用的匹配条件是同一个 `VolumeTemplate` 下渲染出相同名称；只有空闲的 `Available` AgentCBS 可以复用。如果同名 AgentCBS 仍处于 `Bound` 状态，需要先停止原实例，不能被两个实例同时挂载。
-
-```go
-fmt.Println(inst.VolumeMounts[0].ResolvedAgentCBSId) // acbs-xxx
-```
-
-#### 2.1.4 删除实例并保留数据盘
-
-```go
-_, err = client.StopSandboxInstance(ctx, &ags.StopSandboxInstanceRequest{
-    InstanceId: inst.InstanceId,
-})
-```
-
-预期结果：
-
-- 沙箱实例删除。
-- 因为 `ReclaimPolicy=Retain`，AgentCBS 不删除。
-- AgentCBS 状态变为 `Available`。
-
-#### 2.1.5 再次启动同一会话
-
-```go
-inst2, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-    Metadata: []ags.Metadata{
-        {Name: "sessionId", Value: "sess-001"},
-    },
-})
-```
-
-预期结果：
-
-- AGS 再次渲染出 `agent-sess-001`。
-- 查询到已有空闲 AgentCBS 后直接复用。
-- `inst2.VolumeMounts[0].ResolvedAgentCBSId` 与上一次相同。
-
-#### 2.1.6 查询 AgentCBS
-
-```go
-resp, err := client.DescribeAgentCBS(ctx, &ags.DescribeAgentCBSRequest{
-    Filters: []ags.Filter{
-        {Name: "VolumeTemplateId", Values: []string{vt.VolumeTemplateId}},
-    },
-})
-```
+对使用新链路创建的 Tool，查询接口返回 `VolumeMounts[]`，客户可以看到该 Tool 被允许使用哪些模板。
 
 返回示例：
 
-```go
-[]ags.AgentCBS{
+```json
+{
+  "ToolId": "sdt-xxxxxxxx",
+  "ToolName": "code-interpreter",
+  "VolumeMounts": [
     {
-        AgentCBSId:      "acbs-001",
-        Name:            "agent-sess-001",
-        Status:          "Bound",
-        BoundInstanceId: "ins-xxx",
-        Capacity:        "20Gi",
-        DiskType:        "CLOUD_SSD",
-    },
-    {
-        AgentCBSId: "acbs-002",
-        Name:       "agent-sess-002",
-        Status:     "Available",
-        Capacity:   "20Gi",
-        DiskType:   "CLOUD_SSD",
-    },
+      "Name": "workspace",
+      "VolumeTemplateId": "vt-xxxxxxxx",
+      "MountPath": "/workspace",
+      "ReadOnly": false,
+      "Inherit": true
+    }
+  ]
 }
 ```
 
-### 2.2 AgentCBS 普通独占数据盘
+### 5.3 StartSandboxInstance 复用 Metadata 和 MountOptions
 
-客户希望每个沙箱启动时获得一块独立数据盘，实例删除后数据盘也删除。
+`StartSandboxInstance` 是已有 API。本次不新增 `CreateSandboxInstance`，也不允许实例启动时直接传新的 `VolumeTemplateId`。
 
-```go
-vt, err := client.CreateVolumeTemplate(ctx, &ags.CreateVolumeTemplateRequest{
-    VolumeTemplateName: "temporary-agent-cbs",
-    ProvisionMode:      "Dedicated",
-    ReclaimPolicy:      "Delete",
-    DefaultCapacity:    "20Gi",
-    Source: ags.VolumeSource{
-        Type: "AgentCBS",
-        AgentCBS: &ags.AgentCBSVolumeSource{
-            DiskType: "CLOUD_SSD",
-        },
-    },
-})
-```
+本次变化只涉及两个已有字段：
 
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "batch-runner",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "data",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/data",
-            Inherit:           ptr.Bool(true),
-        },
-    },
-})
-```
+| 字段 | 原语义 | 新增语义 |
+|------|--------|----------|
+| `Metadata[]` | 实例元数据，原样持久化 | 可作为 `${sessionId}` 的模板变量来源 |
+| `MountOptions[]` | 覆盖 Tool `StorageMounts[]` | 对新 Tool 覆盖或启用 Tool `VolumeMounts[]` |
 
-```go
-inst, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-})
-```
+启动实例时可以不传挂载字段，系统会自动挂载 Tool 中 `Inherit=true` 的 `VolumeMounts[]`。
 
-预期结果：
+请求示例：只传 metadata，使用默认挂载
 
-- 每次启动实例都会创建一块新的 AgentCBS。
-- 实例详情返回 `ResolvedAgentCBSId`。
-- 删除实例时，因为 `ReclaimPolicy=Delete`，AgentCBS 一起删除。
-
-### 2.3 COS / CFS / Agent Bucket 会话独立工作目录
-
-客户希望每个会话拥有独立目录，沙箱重建后仍能回到同一份数据。
-
-#### 2.3.1 创建共享介质 VolumeTemplate
-
-```go
-vt, err := client.CreateVolumeTemplate(ctx, &ags.CreateVolumeTemplateRequest{
-    VolumeTemplateName: "session-workspace",
-    Description:        "COS workspace split by sessionId",
-    ProvisionMode:      "Dedicated",
-    ReclaimPolicy:      "Retain",
-    SubPathTemplate:    "${sessionId}",
-    Source: ags.VolumeSource{
-        Type: "Cos",
-        Cos: &ags.CosVolumeSource{
-            BucketName: "agent-workspaces",
-            BucketPath: "/sessions",
-        },
-    },
-})
-```
-
-#### 2.3.2 Tool 引用 VolumeTemplate
-
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "code-interpreter",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "workspace",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/workspace",
-            Inherit:           ptr.Bool(true),
-        },
-    },
-})
-```
-
-#### 2.3.3 启动实例
-
-```go
-inst, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-    Metadata: []ags.Metadata{
-        {Name: "sessionId", Value: "sess-001"},
-    },
-})
-```
-
-预期结果：
-
-- AGS 渲染最终子目录：`sess-001`。
-- 最终挂载到 `BucketPath=/sessions` 下的会话子目录。
-- 同一个 `sessionId` 再次启动时，挂载到同一目录。
-- 客户不需要维护 `sessionId -> SubPath` 映射。
-
-查询实例可看到最终解析结果：
-
-```go
-ins, err := client.DescribeSandboxInstance(ctx, &ags.DescribeSandboxInstanceRequest{
-    InstanceId: inst.InstanceId,
-})
-
-fmt.Println(ins.VolumeMounts[0].ResolvedSubPath) // sess-001
-```
-
-### 2.4 多实例共享数据
-
-客户希望多个沙箱同时读写同一份共享数据，例如团队数据集、共享任务目录或共享输出目录。
-
-#### 2.4.1 创建共享 VolumeTemplate
-
-```go
-vt, err := client.CreateVolumeTemplate(ctx, &ags.CreateVolumeTemplateRequest{
-    VolumeTemplateName: "shared-dataset",
-    ProvisionMode:      "Shared",
-    ReclaimPolicy:      "Retain",
-    Source: ags.VolumeSource{
-        Type: "Cfs",
-        Cfs: &ags.CfsVolumeSource{
-            FileSystemId: "cfs-xxx",
-            Path:         "/datasets/team-a",
-        },
-    },
-})
-```
-
-#### 2.4.2 Tool 默认挂载共享数据
-
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "data-agent",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "dataset",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/mnt/dataset",
-            Inherit:           ptr.Bool(true),
-        },
-    },
-})
-```
-
-#### 2.4.3 多个实例启动
-
-```go
-instA, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-})
-
-instB, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-})
-```
-
-预期结果：
-
-- 多个实例都挂载同一份共享数据。
-- 底层 CFS 文件系统由客户提供和管理。
-- AGS 只负责在 `VolumeTemplate` 声明边界内完成挂载和权限控制。
-
-### 2.5 Tool 声明可用存储，实例按需启用
-
-客户希望 Tool 预先声明可用的数据集，但默认启动实例时不挂载，只有需要时才显式启用。
-
-#### 2.5.1 Tool 声明但默认不挂载
-
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "analysis-tool",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "dataset",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/mnt/dataset",
-            Inherit:           ptr.Bool(false),
-        },
-    },
-})
-```
-
-#### 2.5.2 默认启动不挂载
-
-```go
-inst, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-})
-```
-
-预期结果：
-
-- `dataset` 不进入该实例的最终挂载列表。
-
-#### 2.5.3 实例启动时显式启用
-
-```go
-inst, err := client.StartSandboxInstance(ctx, &ags.StartSandboxInstanceRequest{
-    ToolId: tool.ToolId,
-    MountOptions: []ags.MountOption{
-        {
-            Name:     "dataset",
-            MountPath: "/mnt/dataset",
-            ReadOnly: ptr.Bool(true),
-        },
-    },
-})
-```
-
-预期结果：
-
-- 因为 Tool 已声明同名 `dataset`，实例可以启用它。
-- 本次实例将其挂载到 `/mnt/dataset`。
-- 本次实例将权限收紧为只读。
-- 实例不能修改 `VolumeTemplateId`，也不能引用 Tool 未声明的新存储。
-
-### 2.6 不同团队按照 tag 鉴权
-
-客户希望不同团队只能使用自己被授权的存储声明。例如团队 A 只能使用 `team=team-a` 的 `VolumeTemplate`，生产环境 Tool 只能使用 `env=prod` 的 `VolumeTemplate`。
-
-#### 2.6.1 创建带 tag 的 VolumeTemplate
-
-```go
-vt, err := client.CreateVolumeTemplate(ctx, &ags.CreateVolumeTemplateRequest{
-    VolumeTemplateName: "team-a-workspace",
-    Description:        "workspace for team-a agents",
-    Tags: []ags.Tag{
-        {Key: "team", Value: "team-a"},
-        {Key: "env", Value: "prod"},
-    },
-    ProvisionMode:   "Dedicated",
-    ReclaimPolicy:   "Retain",
-    SubPathTemplate: "${sessionId}",
-    Source: ags.VolumeSource{
-        Type: "Cos",
-        Cos: &ags.CosVolumeSource{
-            BucketName: "agent-workspaces",
-            BucketPath: "/team-a",
-        },
-    },
-})
-```
-
-#### 2.6.2 Tool 引用 VolumeTemplate 时触发鉴权
-
-```go
-tool, err := client.CreateSandboxTool(ctx, &ags.CreateSandboxToolRequest{
-    ToolName: "team-a-agent",
-    VolumeMounts: []ags.VolumeMount{
-        {
-            Name:              "workspace",
-            VolumeTemplateId: vt.VolumeTemplateId,
-            MountPath:         "/workspace",
-            Inherit:           ptr.Bool(true),
-        },
-    },
-})
-```
-
-预期结果：
-
-- 调用方有 `team=team-a` 且 `env=prod` 的 `VolumeTemplate` 使用权限时，Tool 创建成功。
-- 调用方没有对应 tag 权限时，引用该 `VolumeTemplate` 会被拒绝。
-- 后续实例启动只能使用 Tool 已声明的同名挂载，不能绕过 Tool 临时引用其他团队的 `VolumeTemplate`。
-- AgentCBS 的费用和审计也通过所属 `VolumeTemplate` 的 tag 归属到对应团队。
-
-鉴权检查点：
-
-- 创建 `VolumeTemplate` 时，记录该资源的 tag，作为后续授权和审计依据。
-- `CreateSandboxTool` 引用 `VolumeTemplate` 时，检查调用方是否有该 `VolumeTemplate` 的使用权限，包括 tag 条件。
-- `StartSandboxInstance` 不允许传入新的 `VolumeTemplate`，只能启用或覆盖 Tool 已声明的同名挂载，因此不能绕过 Tool 侧授权。
-- `DescribeVolumeTemplates` 可以按 tag 过滤，便于团队查看自己有权限或归属自己的存储声明。
-- AgentCBS 不单独打 tag；它的鉴权、审计和费用归属都继承所属 `VolumeTemplate`。
-
-## 3. API 设计
-
-### 3.1 API 列表
-
-首期新增或调整以下 API：
-
-| API | 类型 | 作用 |
-|-----|------|------|
-| `CreateVolumeTemplate` | 新增 | 创建存储声明资源 |
-| `DescribeVolumeTemplates` | 新增 | 查询存储声明资源 |
-| `DeleteVolumeTemplate` | 新增 | 删除未被引用且无存活 AgentCBS 的存储声明 |
-| `DescribeAgentCBS` | 新增 | 查询 AGS 派生的数据盘，区分绑定中和空闲 |
-| `DeleteAgentCBS` | 新增 | 删除空闲 AgentCBS |
-| `CreateSandboxTool` | 调整 | 在已有创建 Tool API 上新增 `VolumeMounts[]` 字段，声明 Tool 可使用的存储集合和默认挂载方式 |
-| `StartSandboxInstance` | 调整 | 复用已有 `Metadata[]` 做模板渲染；复用已有 `MountOptions[]` 覆盖或启用 Tool 已声明的 Volume 挂载 |
-| `DescribeSandboxInstance` | 调整 | 返回最终实际挂载结果，包括 `ResolvedSubPath` 和 `ResolvedAgentCBSId` |
-
-首期不支持以下 API 行为：
-
-- 不支持客户直接 `CreateAgentCBS`。
-- 不支持启动实例时追加全新存储。
-- 不支持接管客户已有 CBS 数据盘。
-- 不支持通用 CBS API。
-
-### 3.2 CreateVolumeTemplate
-
-创建存储声明资源。
-
-```go
-type CreateVolumeTemplateRequest struct {
-    VolumeTemplateName string
-    Description        string
-    Tags               []Tag
-
-    ProvisionMode string // Dedicated / Shared
-    ReclaimPolicy string // Retain / Delete
-
-    Source          VolumeSource
-    SubPathTemplate string
-
-    DefaultCapacity string // AgentCBS 默认容量，例如 20Gi
+```json
+{
+  "ToolId": "sdt-xxxxxxxx",
+  "Metadata": [
+    {"Name": "sessionId", "Value": "sess-001"}
+  ]
 }
 ```
 
-```go
-type CreateVolumeTemplateResponse struct {
-    VolumeTemplate VolumeTemplate
+请求示例：启用 Tool 中 `Inherit=false` 的挂载
+
+```json
+{
+  "ToolId": "sdt-xxxxxxxx",
+  "MountOptions": [
+    {
+      "Name": "dataset",
+      "MountPath": "/mnt/dataset",
+      "ReadOnly": true
+    }
+  ]
+}
+```
+
+`MountOption` 字段：
+
+| 字段 | 说明 |
+|------|------|
+| `Name` | 必填，必须匹配 Tool 已声明的 `VolumeMount.Name` |
+| `MountPath` | 覆盖本次实例的挂载路径 |
+| `ReadOnly` | 只能从可写收紧为只读，不能把只读放宽为可写 |
+| `SubPath` | 仅共享介质且模板未配置 `SubPathTemplate` 时允许 |
+
+允许行为：
+
+- 启用 Tool 中 `Inherit=false` 的同名挂载。
+- 覆盖本次实例的 `MountPath`。
+- 将 `ReadOnly=false` 收紧为 `true`。
+- 在共享介质且无 `SubPathTemplate` 时覆盖 `SubPath`。
+
+拒绝行为：
+
+- 引用 Tool 未声明的 `Name`。
+- 在 `StartSandboxInstance` 中传入新的 `VolumeTemplateId`。
+- 修改存储源、容量、盘型、回收策略。
+- 将只读挂载放宽为可写。
+- AgentCBS 传 `SubPath`。
+- `VolumeTemplate.SubPathTemplate` 非空时传 `SubPath`。
+- 模板引用 `${sessionId}` 但 `Metadata[]` 未提供 `sessionId`。
+
+### 5.4 DescribeSandboxInstance / DescribeSandboxInstanceList 返回最终挂载结果
+
+实例查询接口新增最终挂载视图。该视图用于查询、审计和排障，不是独立云资源。
+
+响应新增字段：
+
+```json
+{
+  "InstanceId": "ins-xxxxxxxx",
+  "VolumeMounts": [
+    {
+      "Name": "workspace",
+      "VolumeTemplateId": "vt-xxxxxxxx",
+      "SourceType": "Cos",
+      "MountPath": "/workspace",
+      "ReadOnly": false,
+      "ResolvedSubPath": "sess-001"
+    },
+    {
+      "Name": "data",
+      "VolumeTemplateId": "vt-yyyyyyyy",
+      "SourceType": "AgentCBS",
+      "MountPath": "/data",
+      "ReadOnly": false,
+      "ResolvedAgentCBSId": "acbs-xxxxxxxx",
+      "ResolvedAgentCBSName": "agent-sess-001",
+      "ResolvedReclaimPolicy": "Retain"
+    }
+  ]
 }
 ```
 
 字段说明：
 
-| 字段 | 是否必填 | 说明 |
-|------|----------|------|
-| `VolumeTemplateName` | 是 | 用户自定义名称，同一租户内唯一 |
-| `Description` | 否 | 描述信息 |
-| `Tags` | 否 | 云资源 tag，用于鉴权、审计和成本归属 |
-| `ProvisionMode` | 是 | `Dedicated` 或 `Shared` |
-| `ReclaimPolicy` | 是 | `Retain` 或 `Delete`；共享介质首期只支持 `Retain` |
-| `Source` | 是 | 存储源，多态结构 |
-| `SubPathTemplate` | 否 | 共享介质子目录模板，首期只支持一个变量，例如 `${sessionId}` |
-| `DefaultCapacity` | AgentCBS 必填 | AgentCBS 默认容量，首期不支持实例级覆盖 |
-
-关键校验：
-
-- `Source.Type=AgentCBS` 时，`DefaultCapacity` 必填。
-- `Source.Type=AgentCBS` 时，可选 `NameTemplate`；不传表示每次实例启动创建唯一数据盘。
-- `Source.Type=AgentCBS` 时，首期仅支持 AGS 托管的 AgentCBS，不接入外部数据盘。
-- 共享介质传 `ReclaimPolicy=Delete` 时拒绝。
-- `SubPathTemplate` 只能包含一个变量。
-
-### 3.3 DescribeVolumeTemplates
-
-查询存储声明资源。
-
-```go
-type DescribeVolumeTemplatesRequest struct {
-    VolumeTemplateIds   []string
-    VolumeTemplateName  string
-    SourceType          string
-    Tags                []TagFilter
-    Offset              int
-    Limit               int
-}
-```
-
-```go
-type DescribeVolumeTemplatesResponse struct {
-    TotalCount      int
-    VolumeTemplates []VolumeTemplate
-}
-```
-
-常用过滤条件：
-
-| 过滤条件 | 说明 |
-|----------|------|
-| `VolumeTemplateIds` | 按资源 ID 查询 |
-| `VolumeTemplateName` | 按名称查询 |
-| `SourceType` | 按 `Cos` / `Cfs` / `AgentBucket` / `AgentCBS` 查询 |
-| `Tags` | 按 tag 查询，用于项目、环境、成本归属 |
-
-### 3.4 DeleteVolumeTemplate
-
-删除存储声明资源。
-
-```go
-type DeleteVolumeTemplateRequest struct {
-    VolumeTemplateId string
-}
-```
-
-删除约束：
-
-- 如果仍被 `SandboxTool.VolumeMounts[]` 引用，拒绝删除。
-- 如果仍存在未删除的 AgentCBS，拒绝删除。
-- 删除共享介质类型 `VolumeTemplate` 时，不删除底层 COS/CFS/Agent Bucket 资源，也不删除其中的数据。
-
-### 3.5 CreateSandboxTool API 调整
-
-`CreateSandboxTool` 是已有 API。本次 Volume 方案不是新增一个创建 Tool 的 API，而是在已有创建 Tool API 上新增 `VolumeMounts[]` 字段，用于声明 Tool 可使用的 `VolumeTemplate` 以及默认挂载方式。
-
-现有 `StorageMounts[]` 是把存储源和挂载声明都写在 Tool 内；新 `VolumeMounts[]` 改为引用独立的 `VolumeTemplate`。下面只展示本方案新增或相关字段，其他已有字段保持现有 API 语义。
-
-```go
-type CreateSandboxToolRequest struct {
-    // 已有字段，保持不变。
-    ToolName string
-    ToolType string
-    // ...
-
-    // 新增字段。
-    VolumeMounts []VolumeMount
-}
-```
-
-```go
-type VolumeMount struct {
-    Name              string
-    VolumeTemplateId string
-
-    MountPath string
-    ReadOnly  *bool
-    SubPath   string
-
-    Inherit *bool
-}
-```
-
-Tool 侧字段说明：
-
-| 字段 | 是否必填 | 说明 |
-|------|----------|------|
-| `Name` | 是 | Tool 内唯一，实例级覆盖时按该字段匹配 |
-| `VolumeTemplateId` | 是 | 引用的 `VolumeTemplate` 资源 ID |
-| `MountPath` | 是 | 容器内挂载路径 |
-| `ReadOnly` | 否 | 默认读写；设置为 true 后实例不能放宽为可写 |
-| `SubPath` | 否 | 共享介质子路径；AgentCBS 禁止填写 |
-| `Inherit` | 否 | 默认 true；false 表示实例默认不挂载 |
-
-关键校验：
-
-- `VolumeTemplateId` 必须存在。
-- 调用方必须有使用该 `VolumeTemplate` 的权限。
-- `Name` 在 Tool 内唯一。
-- `MountPath` 在 Tool 内不能冲突。
-- AgentCBS 挂载不允许填写 `SubPath`。
-
-### 3.6 StartSandboxInstance.Metadata 字段语义扩展
-
-`StartSandboxInstance` 是已有 API，`Metadata[]` 也是已有字段。本次 Volume 方案不改变 `Metadata[]` 的基础形态，只扩展它在 `VolumeTemplate` 模板渲染中的用途。
-
-```go
-type Metadata struct {
-    Name  string
-    Value string
-}
-```
-
-示例：
-
-```go
-Metadata: []ags.Metadata{
-    {Name: "sessionId", Value: "sess-001"},
-}
-```
-
-渲染规则：
-
-- `SubPathTemplate="${sessionId}"` 渲染为 `sess-001`。
-- `NameTemplate="agent-${sessionId}"` 渲染为 `agent-sess-001`。
-- 模板引用的变量缺失时拒绝启动实例。
-- 首期只支持一个模板变量。
-
-### 3.7 StartSandboxInstance 挂载覆盖字段调整
-
-`StartSandboxInstance` 是已有 API。现有实例级挂载覆盖字段是 `MountOptions[]`，语义是按 `Name` 引用 Tool 已声明的挂载，并覆盖本次实例的 `MountPath`、`ReadOnly`、`SubPath`。
-
-首期沿用这个实例级覆盖模型，而不是让实例在启动时直接引用新的 `VolumeTemplate`。也就是说，实例启动时仍然只能覆盖或启用 Tool 已声明的同名挂载，不能追加全新存储。
-
-下面只展示与本方案相关的已有字段，不是完整 `StartSandboxInstanceRequest`。`ToolId`、`ToolName`、`TemplateId` 等现有选择规则保持不变。
-
-```go
-type StartSandboxInstanceRequest struct {
-    // 已有字段，保持不变。
-    ToolId   string
-    ToolName string
-    // ...
-
-    // 已有字段，本方案扩展其语义。
-    Metadata []Metadata
-
-    // 已有字段，本方案沿用其覆盖模型。
-    MountOptions []MountOption
-}
-
-type MountOption struct {
-    Name      string
-    MountPath string
-    ReadOnly  *bool
-    SubPath   string
-}
-```
-
-实例级 `MountOptions[]` 的语义：
-
-- 只能按 `Name` 引用 Tool 已声明的同名挂载。
-- 可以启用 Tool 侧 `Inherit=false` 的挂载。
-- 可以覆盖本次实例的 `MountPath`。
-- 可以将 `ReadOnly` 从 false 收紧为 true。
-- 可以在允许范围内指定 `SubPath`。
-
-共享介质 SubPath 解析规则：
-
-- 对 COS / CFS / Agent Bucket，最终访问边界由 `VolumeTemplate.Source` 中的基础路径和子路径共同决定。
-- 如果 `VolumeTemplate.SubPathTemplate` 非空，则最终子路径由模板和 `Metadata` 渲染得到，Tool 侧和实例级都不能再传 `SubPath`。
-- 如果 `VolumeTemplate.SubPathTemplate` 为空，Tool 侧可以声明默认 `SubPath`，实例级可以在同名挂载上覆盖 `SubPath`。
-- 显式 `SubPath` 必须是相对路径，不能是绝对路径，不能包含 `.`、`..` 等相对路径片段，也不能越过 `VolumeTemplate` 声明的基础路径。
-- AgentCBS 是整盘挂载，不支持 `SubPath`。
-
-系统合并规则：
-
-1. 读取 Tool 上所有 `VolumeMounts[]`。
-2. 选择 Tool 侧 `Inherit=true` 的挂载作为默认挂载。
-3. 读取实例级 `MountOptions[]`。
-4. 对实例级每个挂载，按 `Name` 查找 Tool 侧声明。
-5. 找到后合并本次覆盖值。
-6. 渲染 `Metadata`，生成最终 `ResolvedSubPath` 或 `ResolvedAgentCBSId`。
-7. 将最终结果写入实例详情，并生成最终实例挂载配置。
-
-拒绝规则：
-
-- 实例级挂载 `Name` 在 Tool 中不存在。
-- 实例级传入新的 `VolumeTemplateId` 或其他 `VolumeTemplate` 引用字段。
-- 实例级修改容量、盘类型、回收策略等资源定义。
-- Tool 侧或 VolumeTemplate 要求只读，实例级试图改为可写。
-- `VolumeTemplate.SubPathTemplate` 非空时，实例级同时传 `SubPath`。
-- AgentCBS 挂载传 `SubPath`。
-
-### 3.8 DescribeSandboxInstance.VolumeMounts
-
-查询实例时返回最终实际挂载结果。
-
-```go
-type SandboxInstance struct {
-    InstanceId   string
-    VolumeMounts []InstanceVolumeMount
-}
-
-type InstanceVolumeMount struct {
-    Name              string
-    VolumeTemplateId string
-
-    MountPath string
-    ReadOnly  bool
-    SubPath   string
-
-    ResolvedSubPath    string
-    ResolvedAgentCBSId string
-}
-```
-
-出参语义：
-
 | 字段 | 说明 |
 |------|------|
 | `Name` | Tool 侧挂载名称 |
-| `VolumeTemplateId` | 实际引用的 `VolumeTemplate` 资源 ID |
+| `VolumeTemplateId` | 实际使用的模板 ID |
+| `SourceType` | `Cos` / `Cfs` / `AgentBucket` / `AgentCBS` |
 | `MountPath` | 最终容器内挂载路径 |
-| `ReadOnly` | 最终只读状态 |
-| `SubPath` | 客户显式传入的子路径，若有 |
-| `ResolvedSubPath` | 系统最终解析出的共享介质子路径 |
+| `ReadOnly` | 最终只读策略 |
+| `ResolvedSubPath` | 共享介质最终子路径 |
 | `ResolvedAgentCBSId` | AgentCBS 场景下最终绑定的数据盘 ID |
+| `ResolvedAgentCBSName` | AgentCBS 渲染名或系统生成名 |
+| `ResolvedReclaimPolicy` | 实例创建时使用的回收策略快照 |
 
-说明：
+为什么要返回最终结果：
 
-- 返回的是实例最终挂载快照，不是 Tool 原始声明。
-- 该信息用于客户排查、审计、账单归属和问题定位。
-- 它不是独立云资源。
+- Tool 默认挂载加实例覆盖后，客户不需要自己推导最终挂载路径。
+- 共享介质可以直接看到最终子目录。
+- AgentCBS 可以直接看到实际绑定的数据盘 ID。
+- 删除实例时的 AgentCBS 保留/删除逻辑需要依赖实例创建时的快照，而不是读取当前 Tool 配置重新计算。
 
-### 3.9 DescribeAgentCBS
+## 6. 模板变量和 SubPath 规则
 
-查询 AGS 派生的数据盘。
+首期只支持字面量 `${sessionId}`。
 
-```go
-type DescribeAgentCBSRequest struct {
-    AgentCBSIds         []string
-    VolumeTemplateId    string
-    VolumeTemplateName  string
-    Status              string // Creating / Available / Bound / Deleting / Deleted / Failed
-    BoundInstanceId     string
-    Offset              int
-    Limit               int
-}
-```
+| 模板字段 | 适用类型 | 示例 |
+|----------|----------|------|
+| `SubPathTemplate` | COS / CFS / Agent Bucket | `${sessionId}` -> `sess-001` |
+| `NameTemplate` | AgentCBS | `agent-${sessionId}` -> `agent-sess-001` |
 
-```go
-type DescribeAgentCBSResponse struct {
-    TotalCount int
-    AgentCBS   []AgentCBS
-}
-```
+规则：
 
-```go
-type AgentCBS struct {
-    AgentCBSId         string
-    Name               string
-    VolumeTemplateId   string
-    VolumeTemplateName string
+- 模板变量来源是 `StartSandboxInstance.Metadata[]`。
+- 模板引用 `${sessionId}` 但实例未传 `Metadata.Name=sessionId` 时，启动实例失败。
+- `${uin}`、`${toolId}`、`${foo}` 等其他变量全部拒绝。
+- 不支持多个变量组合，也不做通用模板语言。
+- 变量值需要通过路径或名称安全校验。
+- `SubPathTemplate` 非空时，Tool 侧和实例级都不能再传 `SubPath`。
+- 显式 `SubPath` 必须是相对路径，不能是绝对路径，不能包含 `.`、`..`，不能越过 `VolumeTemplate` 声明的基础路径。
 
-    Status          string
-    BoundInstanceId string
+## 7. 典型调用流程
 
-    Capacity string
-    DiskType string
+### 7.1 AgentCBS 会话复用
 
-    CreateTime     string
-    UpdateTime     string
-    LastUnbindTime string
-}
-```
+1. 调用 `CreateVolumeTemplate` 创建 AgentCBS 模板：
+   - `SourceType=AgentCBS`
+   - `DefaultCapacity=20Gi`
+   - `DiskType=CLOUD_SSD`
+   - `NameTemplate=agent-${sessionId}`
+   - `ReclaimPolicy=Retain`
+2. 调用 `CreateSandboxTool`，在 `VolumeMounts[]` 中引用该模板。
+3. 调用 `StartSandboxInstance`，在 `Metadata[]` 中传 `sessionId=sess-001`。
+4. AGS 按 `VolumeTemplateId + renderedName` 查找 AgentCBS：
+   - 不存在则创建。
+   - `Available` 则绑定复用。
+   - `Bound` 则拒绝被另一个实例同时绑定。
+5. 查询实例时，`VolumeMounts[]` 返回 `ResolvedAgentCBSId`。
+6. 停止实例时，如果 `ReclaimPolicy=Retain`，AgentCBS 解绑后变为 `Available`。
+7. 同一 `sessionId` 再次启动实例，复用同一块 `Available` AgentCBS。
 
-状态说明：
+### 7.2 共享介质会话目录
 
-| 状态 | 说明 |
+1. 调用 `CreateVolumeTemplate` 创建 COS / CFS / Agent Bucket 模板。
+2. 设置 `SubPathTemplate=${sessionId}`。
+3. Tool 通过 `VolumeMounts[]` 绑定该模板。
+4. 启动实例时在 `Metadata[]` 中传 `sessionId`。
+5. 查询实例时，`VolumeMounts[]` 返回 `ResolvedSubPath=sess-001`。
+
+控制面不承诺创建或删除共享介质子目录；共享介质本体和目录内容仍由客户管理。
+
+### 7.3 Tool 声明存储，实例按需启用
+
+1. `CreateSandboxTool.VolumeMounts[]` 中设置 `Inherit=false`。
+2. 默认 `StartSandboxInstance` 不挂载该存储。
+3. 需要使用时，在 `StartSandboxInstance.MountOptions[]` 中传同名 `Name`。
+4. 系统确认该 `Name` 已在 Tool 声明后，才允许启用。
+
+## 8. 鉴权、tag、计费和配额
+
+`VolumeTemplate` 是首期存储使用的资源治理单位。
+
+需要鉴权的动作：
+
+| 动作 | 鉴权对象 |
+|------|----------|
+| 创建、查询、删除 `VolumeTemplate` | `VolumeTemplate` |
+| Tool 引用 `VolumeTemplate` | `VolumeTemplate`，需要类似 `UseVolumeTemplate` 的权限 |
+| 实例启用或覆盖挂载 | Tool 已授权的 `VolumeTemplate` |
+| 查询或删除 AgentCBS | AgentCBS 所属 `VolumeTemplate` |
+
+tag 规则：
+
+- `VolumeTemplate` 支持 tag。
+- 可以按团队、项目、环境做授权和查询过滤。
+- AgentCBS 不单独打 tag，权限、审计和成本通过 `VolumeTemplateId` 归属。
+
+AgentCBS 计费/配额口径：
+
+- AgentCBS 是整盘资源，建议按容量时长计费。
+- `Bound` 和 `Available` 都可能产生容量成本。
+- `Deleting` / `Error` 只要底层盘仍存在，就不应提前释放配额或停止计费。
+- 用量事件应保存 `VolumeTemplateId` 和 tag 快照，避免 tag 变更影响历史归属。
+
+## 9. 错误和边界
+
+常见拒绝场景：
+
+| 场景 | 行为 |
 |------|------|
-| `Creating` | 正在创建 |
-| `Available` | 空闲，可被后续相同模板和名称复用 |
-| `Bound` | 已绑定到某个沙箱实例 |
-| `Deleting` | 正在删除 |
-| `Deleted` | 已删除 |
-| `Failed` | 创建或绑定失败 |
+| `StartSandboxInstance.MountOptions[].Name` 在 Tool 中不存在 | 启动失败 |
+| 实例启动时传新的 `VolumeTemplateId` | 启动失败 |
+| `SubPathTemplate` 非空时仍传 `SubPath` | 启动失败 |
+| AgentCBS 挂载传 `SubPath` | 启动失败 |
+| 模板变量不是 `${sessionId}` | 创建模板失败 |
+| 模板引用 `${sessionId}` 但启动实例未传 metadata | 启动失败 |
+| 同名 AgentCBS 已 `Bound` 到其他实例 | 启动失败 |
+| 删除 `Bound` AgentCBS | 删除失败 |
+| 删除仍被 Tool 引用的 `VolumeTemplate` | 删除失败 |
+| 删除仍存在 AgentCBS 的 `VolumeTemplate` | 删除失败 |
 
-首期约束：
+## 10. 兼容和迁移
 
-- AgentCBS 不支持客户直接创建。
-- AgentCBS 不支持 tag。
-- AgentCBS 的鉴权、计费和审计归属到所属 `VolumeTemplate`。
-- 同名 AgentCBS 已经 `Bound` 时，不允许另一个实例同时绑定。
+旧链路继续保留：
 
-### 3.10 DeleteAgentCBS
+- 旧 Tool 继续使用 `StorageMounts[]`。
+- 旧实例继续使用 `MountOptions[]` 覆盖旧 `StorageMounts[]`。
+- 旧 provider 下发链路继续工作。
 
-删除空闲 AgentCBS。
+新链路：
 
-```go
-type DeleteAgentCBSRequest struct {
-    AgentCBSId string
-}
-```
+- 新 Tool 使用 `VolumeMounts[]`。
+- 新实例使用已有 `MountOptions[]` 覆盖或启用 Tool `VolumeMounts[]`。
+- 新实例查询返回最终 `VolumeMounts[]` 结果视图。
+- AgentCBS 只在新链路中出现。
 
-删除约束：
-
-- 只能删除 `Available` 状态的 AgentCBS。
-- `Bound` 状态必须先删除或停止对应沙箱实例，使其解绑。
-- 删除后不可恢复。
-
-### 3.11 VolumeSource
-
-`VolumeSource` 复用现有共享介质字段，并新增 AgentCBS。
-
-```go
-type VolumeSource struct {
-    Type        string // Cos / Cfs / AgentBucket / AgentCBS
-    Cos         *CosVolumeSource
-    Cfs         *CfsVolumeSource
-    AgentBucket *AgentBucketVolumeSource
-    AgentCBS    *AgentCBSVolumeSource
-}
-```
-
-共享介质字段示例：
-
-```go
-type CosVolumeSource struct {
-    Endpoint   string
-    BucketName string
-    BucketPath string
-}
-
-type CfsVolumeSource struct {
-    FileSystemId string
-    Path         string
-}
-
-type AgentBucketVolumeSource struct {
-    LibraryId    string
-    AccessDomain string
-    SpaceId      string
-}
-```
-
-AgentCBS 字段：
-
-```go
-type AgentCBSVolumeSource struct {
-    NameTemplate string
-    DiskType     string
-}
-```
-
-约束：
-
-- `Source.Type=AgentCBS` 时只允许填写 `AgentCBS`。
-- `Source.Type=Cos` 时只允许填写 `Cos`。
-- 其他类型同理，只能填写一个具体 source。
-
-### 3.12 命名约定
-
-本文示例使用 Go SDK 风格字段名。
-
-命名约定：
-
-- 展示名称使用 `COS` / `CFS` / `Agent Bucket`，API 枚举示例使用 `Cos` / `Cfs` / `AgentBucket`。
-- `VolumeTemplate.DefaultCapacity` 表示后续派生 AgentCBS 时使用的默认容量。
-- `AgentCBS.Capacity` 表示某块已创建 AgentCBS 的实际容量。
-- `AgentCBS` 缩写大小写：本文统一写 `AgentCBS` / `ResolvedAgentCBSId`。
+首期不自动把旧 `StorageMounts[]` 迁移成 `VolumeTemplate`，也不要求客户已有 Tool 立即迁移。
